@@ -1,36 +1,63 @@
 import asyncio
+import logging
+import socket
+import functools
 
+from asyncio_extras import async_contextmanager, yield_async
 
-class TCPServerProtocol(asyncio.Protocol):
+logger = logging.getLogger(__name__)
+
+_Servers = {}
+
+class TcpServer(asyncio.Protocol):
+    
+    HOST = "127.0.0.1"
+    PORT = 8888
+    
+    def __init__(self):
+        self.transport = None
+            
+    def connection_lost(self, exec):
+        """
+        Callback when the connection is lost
+        
+        Args:
+            exc: <Exception> or None
+        """
+        peername = self.transport.get_extra_info('peername')
+        logger.info('Connection lost from {}: {}'.format(peername, exec))
+        self.transport = None
     
     def connection_made(self, transport):
         peername = transport.get_extra_info('peername')
-        print('Connection from {}'.format(peername))
+        logger.info('Connection made from {}'.format(peername))
         self.transport = transport
-
+    
+    @classmethod
+    async def create_server(cls, host=None, port=None):
+        if not host:
+            host = cls.HOST
+        if not port:
+            port = cls.PORT
+        loop = asyncio.get_event_loop()
+        return await loop.create_server(functools.partial(cls.factory, host, port), host, port)
+        
     def data_received(self, data):
         message = data.decode()
-        print('Data received: {!r}'.format(message))
-
-        print('Send: {!r}'.format(message))
+        logger.info('Data Received: {!r}'.format(data.hex()))
+        
+    @classmethod
+    def factory(cls, host, port):
+        if not _Servers.get((host, port)):
+            _Servers[(host, port)] = cls()
+        return _Servers[(host, port)]
+        
+    def send_data(self, data):
         self.transport.write(data)
 
-        print('Close the client socket')
-        self.transport.close()
-
-loop = asyncio.get_event_loop()
-# Each client connection will create a new protocol instance
-coro = loop.create_server(TCPServerProtocol, '127.0.0.1', 8888)
-server = loop.run_until_complete(coro)
-
-# Serve requests until Ctrl+C is pressed
-print('Serving on {}'.format(server.sockets[0].getsockname()))
-try:
-    loop.run_forever()
-except KeyboardInterrupt:
-    loop.stop()
-
-# Close the server
-server.close()
-loop.run_until_complete(server.wait_closed())
-loop.close()
+    @classmethod    
+    @async_contextmanager
+    async def serve(cls, protocol, host=None, port=None):
+        server = await cls.create_server(host, port)
+        await yield_async(cls.factory(host, port)) # can directly use yield since 3.6
+        server.close()
